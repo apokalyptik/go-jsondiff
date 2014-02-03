@@ -6,6 +6,29 @@ import(
 	"github.com/sergi/go-diff/diffmatchpatch"
 	"encoding/json"
 )
+/*
+Note to self for a little bit later when I get to actually dealing with the deltas... here's how to do it:
+
+	dmp := diffmatchpatch.New()
+	delta := dmp.DiffToDelta(dmp.DiffMain("blah blah", "blah foo blah", true))
+	log.Printf("From: '%s' to '%s' :: %q", "blah blah", "blah foo blah", delta)
+	diff, err := dmp.DiffFromDelta("blah blah", delta)
+	if err != nil {
+	log.Printf("error making diff from delta: %s", err.Error())
+	}
+	patch := dmp.PatchMake(diff)
+	log.Printf("diff: %#v", diff)
+	log.Printf("patch: %#v", patch)
+	r, bools := dmp.PatchApply(patch, "blah blah")
+	log.Printf("%#v, %s", bools, r)
+
+The above code produces the following output:
+
+	2014/01/31 15:14:01 From: 'blah blah' to 'blah foo blah' :: "=5\t+foo \t=4"
+	2014/01/31 15:14:01 diff: []diffmatchpatch.Diff{diffmatchpatch.Diff{Type:0, Text:"blah "}, diffmatchpatch.Diff{Type:1, Text:"foo "}, diffmatchpatch.Diff{Type:0, Text:"blah"}}
+	2014/01/31 15:14:01 patch: []diffmatchpatch.Patch{diffmatchpatch.Patch{diffs:[]diffmatchpatch.Diff{diffmatchpatch.Diff{Type:0, Text:"blah "}, diffmatchpatch.Diff{Type:1, Text:"foo "}, diffmatchpatch.Diff{Type:0, Text:"blah"}}, start1:0, start2:0, length1:9, length2:13}}
+	2014/01/31 15:14:01 []bool{true}, blah foo blah
+*/
 
 // A slice of document changes. Returned by Parse()
 type Changes []DocumentChange
@@ -39,37 +62,54 @@ type Diff struct {
 func (d *Diff) apply(data interface{}) interface{} {
 	// At this point data could be a number of things
 	switch d.Operation {
-		case "+": // Insert new value at index
 		case "-": // Delete value at index
+			return nil
+		case "+": // Insert new value at index
+			return d.Value
 		case "r": // Replace value at index
+			return d.Value
 		case "I": // Integer, add the difference to current value
+			switch data.(type) {
+				case int, int8, int16, int32, int64:
+					return (data.(int64)+d.Value.(int64))
+				case uint, uint8, uint16, uint32, uint64:
+					return (data.(uint64)+d.Value.(uint64))
+				case float32, float64:
+					return (data.(float64)+d.Value.(float64))
+				case nil:
+					return d.Value
+			}
 		case "d": // DiffMatchPatch string at index
-			/*
-			Note to self for a little bit later when I get to actually dealing with the deltas... here's how to do it:
-
-				dmp := diffmatchpatch.New()
-				delta := dmp.DiffToDelta(dmp.DiffMain("blah blah", "blah foo blah", true))
-				log.Printf("From: '%s' to '%s' :: %q", "blah blah", "blah foo blah", delta)
-				diff, err := dmp.DiffFromDelta("blah blah", delta)
-				if err != nil {
-				log.Printf("error making diff from delta: %s", err.Error())
-				}
-				patch := dmp.PatchMake(diff)
-				log.Printf("diff: %#v", diff)
-				log.Printf("patch: %#v", patch)
-				r, bools := dmp.PatchApply(patch, "blah blah")
-				log.Printf("%#v, %s", bools, r)
-
-			The above code produces the following output:
-
-				2014/01/31 15:14:01 From: 'blah blah' to 'blah foo blah' :: "=5\t+foo \t=4"
-				2014/01/31 15:14:01 diff: []diffmatchpatch.Diff{diffmatchpatch.Diff{Type:0, Text:"blah "}, diffmatchpatch.Diff{Type:1, Text:"foo "}, diffmatchpatch.Diff{Type:0, Text:"blah"}}
-				2014/01/31 15:14:01 patch: []diffmatchpatch.Patch{diffmatchpatch.Patch{diffs:[]diffmatchpatch.Diff{diffmatchpatch.Diff{Type:0, Text:"blah "}, diffmatchpatch.Diff{Type:1, Text:"foo "}, diffmatchpatch.Diff{Type:0, Text:"blah"}}, start1:0, start2:0, length1:9, length2:13}}
-				2014/01/31 15:14:01 []bool{true}, blah foo blah
-			*/
+			dmp := diffmatchpatch.New()
+			diff, _ := dmp.DiffFromDelta(data.(string), d.Value.(string)) // TODO: error handling
+			patch := dmp.PatchMake(diff)
+			rval, _ := dmp.PatchApply(patch, data.(string)) // TODO: error handling
+			return rval
 		case "L":  // [recurse] List, apply the diff operations to the current array
+			// Buggy, requires a schema option to allow simperium to return this op. Unimplimented for now
 		case "dL": // [recurse] List, apply the diff operations to the current array (w/dmp) (?)
+			// Buggy, but less than L, requires a schema option to allow simperium to return this op. Unimplimented for now
 		case "O":  // [recurse] Object, apply the diff operations to the current object
+			doc := data.(map[string]interface {})
+			for k, v := range d.Value.(map[string]interface{}) {
+				diff := new(Diff)
+				diff.Operation = v.(map[string]interface{})["o"].(string)
+				diff.Value = v.(map[string]interface{})["v"]
+				if part, ok := doc[k]; true == ok {
+					if newpart := diff.apply(part); nil != newpart {
+						doc[k] = newpart
+					} else {
+						delete(doc, k)
+					}
+				} else {
+					if newpart := diff.apply(nil); nil != newpart {
+						doc[k] = newpart
+					} else {
+						// non operation delete already missing key from a dict
+					}
+				}
+			}
+			return doc
 	}
 	return data
 }
@@ -90,12 +130,35 @@ type DocumentChange struct {
 
 // This only applies to the *entire* document object. Never to keys inside the document dict
 func (d *DocumentChange) apply(doc Json) Json {
+	// { {dict-key}: { "o": {operation}, "v": {value} }
 	switch d.Operation {
 		case "-": // Delete Document
 			return nil
 		case "M": // Modify/Create Document
+			newDocument := make(Json)
+			for k, v := range doc {
+				newDocument[k] = v
+			}
+			for k, change := range d.Changes {
+				if v, ok := newDocument[k]; ok == true {
+					if r := change.apply(v); r != nil {
+						newDocument[k] = r
+					} else {
+						delete(newDocument, k)
+					}
+				} else {
+					if r := change.apply(nil); r != nil {
+						newDocument[k] = r
+					} else {
+						// non op, delete k, no k. possibly inconsistent?
+					}
+				}
+			}
+			return newDocument
+		default:
+			log.Fatal("jsondiff.DocumentChange.Operation was of unknown value")
+			return doc
 	}
-	return doc
 }
 
 // The main entrypoint for changing a document dict via a documentchange. I suspect that I'll
@@ -107,9 +170,7 @@ type JsonDiff struct {
 
 // Apply a DocumentChange{} to a document dict
 func (j *JsonDiff) Apply(document Json, change DocumentChange) (Json, error) {
-	log.Printf("From: %#v", document)
 	newDocument := change.apply(document)
-	log.Printf("To: %#v", newDocument)
 	return newDocument, nil
 }
 
