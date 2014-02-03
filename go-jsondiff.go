@@ -78,6 +78,7 @@ func (d *Diff) apply(data interface{}) interface{} {
 // (excepting Changes which are processed on their own) never deals directly with individual
 // parts of the document but rather the document as a whole.
 type DocumentChange struct {
+	Document string `json:"id"`
 	SourceRevision int `json:"sv"`
 	ClientId string `json:"clientid"`
 	Operation string `json:"o"` // M, -
@@ -108,6 +109,7 @@ type JsonDiff struct {
 func (j *JsonDiff) Apply(document Json, change DocumentChange) (Json, error) {
 	log.Printf("From: %#v", document)
 	newDocument := change.apply(document)
+	log.Printf("To: %#v", newDocument)
 	return newDocument, nil
 }
 
