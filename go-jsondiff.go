@@ -2,6 +2,7 @@
 package jsondiff
 
 import(
+	"strings"
 	"log"
 	"github.com/sergi/go-diff/diffmatchpatch"
 	"encoding/json"
@@ -56,6 +57,16 @@ type Diff struct {
 	Value interface{} `json:"v"`
 }
 
+func patchString(from, delta string) (string, error) {
+	dmp := diffmatchpatch.New()
+	diff, err := dmp.DiffFromDelta(from, delta)
+	if err != nil {
+		return from, err
+	}
+	rval, _ := dmp.PatchApply(dmp.PatchMake(diff), from) // TODO: error handling
+	return rval, nil
+}
+
 // Apply a diff to a part of a document. This only applies to keys inside the main document dict. 
 // Never to the entire document. For top level changes see DocumentChange. interface{} is used
 // here because we could be looking at anything (bool, string, int, float, list, or dict)
@@ -80,15 +91,28 @@ func (d *Diff) apply(data interface{}) interface{} {
 					return d.Value
 			}
 		case "d": // DiffMatchPatch string at index
-			dmp := diffmatchpatch.New()
-			diff, _ := dmp.DiffFromDelta(data.(string), d.Value.(string)) // TODO: error handling
-			patch := dmp.PatchMake(diff)
-			rval, _ := dmp.PatchApply(patch, data.(string)) // TODO: error handling
+			rval, _ := patchString(data.(string), d.Value.(string)) // TODO: error handling
 			return rval
+		case "dL": // List, apply the diff operations to the current array (w/dmp) (?)
+			l := len(data.([]interface{}))
+			list := make([]string, l)
+			for k, v := range data.([]interface{}) {
+				buf, _ := json.Marshal(v) // TODO: error handling
+				list[k] = string(buf)
+			}
+			newList, _ := patchString(strings.Join(list, "\n") + "\n", d.Value.(string))
+			newL := make([]interface{}, 0)
+			for _, v := range strings.Split(newList, "\n") {
+				if len(v) < 1 {
+					continue
+				}
+				i := new(interface{})
+				json.Unmarshal([]byte(v), i) // TODO: error handling
+				newL = append(newL, *i)
+			}
+			return newL
 		case "L":  // [recurse] List, apply the diff operations to the current array
 			// Buggy, requires a schema option to allow simperium to return this op. Unimplimented for now
-		case "dL": // [recurse] List, apply the diff operations to the current array (w/dmp) (?)
-			// Buggy, but less than L, requires a schema option to allow simperium to return this op. Unimplimented for now
 		case "O":  // [recurse] Object, apply the diff operations to the current object
 			doc := data.(map[string]interface {})
 			for k, v := range d.Value.(map[string]interface{}) {
