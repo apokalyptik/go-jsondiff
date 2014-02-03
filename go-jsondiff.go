@@ -2,6 +2,8 @@
 package jsondiff
 
 import(
+	"sort"
+	"strconv"
 	"strings"
 	"log"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -112,6 +114,44 @@ func (d *Diff) apply(data interface{}) interface{} {
 			}
 			return newL
 		case "L":  // [recurse] List, apply the diff operations to the current array
+			// TODO: This is relatively expensive (especially the copying/extending of slices)
+		    list := data.([]interface{})
+			newList := make([]interface{},len(list))
+			for k, v := range list {
+				newList[k] = v
+			}
+			changes := make(map[int]interface{})
+			changeList := make([]int, 0);
+			deleted := 0
+			for key, value := range d.Value.(map[string]interface{}) {
+				iKey, _ := strconv.Atoi(key)
+				changeList = append(changeList, iKey)
+				changes[iKey] = value
+			}
+			sort.Ints(changeList)
+			for _, iKey := range changeList {
+				vm := changes[iKey].(map[string]interface{})
+				diff := new(Diff)
+				diff.Operation = vm["o"].(string)
+				if v, ok := vm["v"]; ok == true {
+					diff.Value = v
+				}
+				affect := iKey - deleted
+				if len(newList) <= affect {
+					newNewList := make([]interface{}, iKey+1)
+					for k, v := range newList {
+						newNewList[k] = v
+					}
+					newList = newNewList
+				}
+				if newValue := diff.apply(newList[affect]); newValue != nil {
+					newList[affect] = newValue
+				} else {
+					deleted++
+					newList = append(newList[:affect], newList[affect+1:]...)
+				}
+			}
+			return newList
 			// Buggy, requires a schema option to allow simperium to return this op. Unimplimented for now
 		case "O":  // [recurse] Object, apply the diff operations to the current object
 			doc := data.(map[string]interface {})
