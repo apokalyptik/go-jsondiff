@@ -1,6 +1,12 @@
 // A pure GO port of https://github.com/Simperium/jsondiff
 package jsondiff
 
+// BUG(apokalyptik) missing schema support (nested and un-nested type, and otype, for generating diffs.)
+// This bug does not affect the patching of items. L, dL, and I (known schema defined diffing varianes)
+// are fully supported for applying diffs to objects, just not generating diffs for objects. For Simperium
+// This functionality is not necessary since the simperium server will gladly accept the diffs and will
+// then send out schema mandated diffs to connected clients...
+
 import (
 	"bytes"
 	"encoding/json"
