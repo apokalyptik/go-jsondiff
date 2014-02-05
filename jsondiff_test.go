@@ -1,13 +1,66 @@
 package jsondiff
 
 import "testing"
+import "io/ioutil"
+import "encoding/json"
+import "log"
 
-func rfirst(i... interface{}) interface{} {
-	return i[0]
+type TestDiff struct {
+	Name string
+	From map[string]interface{}
+	To map[string]interface{}
+	Diff string
+}
+
+var jd *JsonDiff = New()
+var asserts []interface{} = make([]interface{},0)
+var diffs map[string]TestDiff = make(map[string]TestDiff)
+
+func TestSetup(t *testing.T) {
+	data, err := ioutil.ReadFile("assertions.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = json.Unmarshal(data, &asserts)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, vv := range asserts {
+		v := vv.([]interface{})
+		if len(v[2].([]interface{})) > 2 {
+			continue // not handling otypes yet
+		}
+		t := v[0].(string)
+		n := v[1].(string)
+		switch t {
+			case "diff":
+				b, _ := json.Marshal(v[3].(map[string]interface{}))
+				if string(b[:7]) == "{\"o\":\"O" {
+					b[6] = []byte("M")[0]
+				}
+				diffs[n] = TestDiff{
+					Name: n,
+					From: v[2].([]interface{})[0].(map[string]interface{}),
+					To: v[2].([]interface{})[1].(map[string]interface{}),
+					Diff: string(b)}
+		}
+	}
+}
+
+func TestAssertedDiffs(t *testing.T) {
+	for _, v := range diffs {
+		works, err := doesDiffApply(v.From, v.To)
+		if err != nil { t.Errorf("Got error: %s", err.Error()) }
+		if false == works {
+			t.Errorf("Failed Transform\nFrom: %#v\nTo: %#v\nDelta: %s\nGot: %#v", v.From, v.To, getDeltaString(v.From, v.To), getResult(v.From, v.To))
+		}
+		if v.Diff != getDeltaString(v.From, v.To) {
+			t.Errorf("Failed Diff\nFrom: %#v\nTo: %#v\nExpected: %s\nGot: %s", v.From, v.To, v.Diff, getDeltaString(v.From, v.To))
+		}
+	}
 }
 
 func TestNilNil(t *testing.T) {
-	jd := New()
 	d, e := jd.Diff(nil,nil)
 	if d != nil || e != nil {
 		t.Errorf("Expected (nil) (nil), got %#v, %#v", d, e)
@@ -15,7 +68,6 @@ func TestNilNil(t *testing.T) {
 }
 
 func TestSameSame(t *testing.T) {
-	jd := New()
 	d, e := jd.Diff(
 		map[string]interface{}{ "foo": "bar" },
 		map[string]interface{}{ "foo": "bar" })
@@ -25,7 +77,6 @@ func TestSameSame(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	jd := New()
 	d, e := jd.Diff(
 		map[string]interface{}{},
 		nil)
@@ -37,7 +88,6 @@ func TestDelete(t *testing.T) {
 }
 
 func TestCreate(t *testing.T) {
-	jd := New()
 	d, e := jd.Diff(
 		nil,
 		map[string]interface{}{ "foo": "bar" })
