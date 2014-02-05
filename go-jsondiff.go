@@ -2,36 +2,15 @@
 package jsondiff
 
 import(
+	"bytes"
 	"sort"
 	"strconv"
 	"strings"
 	"log"
 	"github.com/sergi/go-diff/diffmatchpatch"
 	"encoding/json"
+	"reflect"
 )
-/*
-Note to self for a little bit later when I get to actually dealing with the deltas... here's how to do it:
-
-	dmp := diffmatchpatch.New()
-	delta := dmp.DiffToDelta(dmp.DiffMain("blah blah", "blah foo blah", true))
-	log.Printf("From: '%s' to '%s' :: %q", "blah blah", "blah foo blah", delta)
-	diff, err := dmp.DiffFromDelta("blah blah", delta)
-	if err != nil {
-	log.Printf("error making diff from delta: %s", err.Error())
-	}
-	patch := dmp.PatchMake(diff)
-	log.Printf("diff: %#v", diff)
-	log.Printf("patch: %#v", patch)
-	r, bools := dmp.PatchApply(patch, "blah blah")
-	log.Printf("%#v, %s", bools, r)
-
-The above code produces the following output:
-
-	2014/01/31 15:14:01 From: 'blah blah' to 'blah foo blah' :: "=5\t+foo \t=4"
-	2014/01/31 15:14:01 diff: []diffmatchpatch.Diff{diffmatchpatch.Diff{Type:0, Text:"blah "}, diffmatchpatch.Diff{Type:1, Text:"foo "}, diffmatchpatch.Diff{Type:0, Text:"blah"}}
-	2014/01/31 15:14:01 patch: []diffmatchpatch.Patch{diffmatchpatch.Patch{diffs:[]diffmatchpatch.Diff{diffmatchpatch.Diff{Type:0, Text:"blah "}, diffmatchpatch.Diff{Type:1, Text:"foo "}, diffmatchpatch.Diff{Type:0, Text:"blah"}}, start1:0, start2:0, length1:9, length2:13}}
-	2014/01/31 15:14:01 []bool{true}, blah foo blah
-*/
 
 // A slice of document changes. Returned by Parse()
 type Changes []DocumentChange
@@ -55,8 +34,8 @@ func Parse(changes string) (Changes, error) {
 // other times more diffs are recursively nested down inside. This only applies to keys 
 // inside the main document dict. For top level changes see DocumentChange{}.
 type Diff struct {
-	Operation string `json:"o"` // +, -, r, I, d, L, dL, O
-	Value interface{} `json:"v"`
+	Operation string `json:"o,omitempty"` // +, -, r, I, d, L, dL, O
+	Value interface{} `json:"v,omitempty"`
 }
 
 func patchString(from, delta string) (string, error) {
@@ -182,14 +161,23 @@ func (d *Diff) apply(data interface{}) interface{} {
 // (excepting Changes which are processed on their own) never deals directly with individual
 // parts of the document but rather the document as a whole.
 type DocumentChange struct {
-	Document string `json:"id"`
-	SourceRevision int `json:"sv"`
-	ClientId string `json:"clientid"`
-	Operation string `json:"o"` // M, -
-	Changes map[string] Diff `json:"v"`
-	Resultrevision int `json:"ev"`
-	CurrentVersion string `json:"cv"`
-	ChangesetIds []string `json:"ccds"`
+	Document string `json:"id,omitempty"`
+	SourceRevision int `json:"sv,omitempty"`
+	ClientId string `json:"clientid,omitempty"`
+	Operation string `json:"o,omitempty"` // M, -
+	Changes map[string] Diff `json:"v,omitempty"`
+	Resultrevision int `json:"ev,omitempty"`
+	CurrentVersion string `json:"cv,omitempty"`
+	ChangesetIds []string `json:"ccids,omitempty"`
+	ChangesetId string `json:"ccid,omitempty"`
+}
+
+func (d *DocumentChange) String() (string, error) {
+	if b, e := json.Marshal(*d); e != nil {
+		return "", e
+	} else {
+		return string(b), nil
+	}
 }
 
 // This only applies to the *entire* document object. Never to keys inside the document dict
@@ -238,9 +226,182 @@ func (j *JsonDiff) Apply(document Json, change DocumentChange) (Json, error) {
 	return newDocument, nil
 }
 
+func (j *JsonDiff) diff_obj(from interface{}, to Json) *Diff {
+	return &Diff{}
+}
+
+func (j *JsonDiff) diff_list(from interface{}, to []interface{}) *Diff {
+	return &Diff{}
+}
+
+func (j *JsonDiff) diff_string(from interface{}, to string) *Diff {
+	switch from.(type) {
+		case string:
+			if from.(string) != to {
+				return &Diff{ Operation: "d", Value: j.dmp.DiffToDelta(j.dmp.DiffMain(from.(string), to, true)) }
+			}
+			return nil
+		default:
+			return j.diff_replace(from, to)
+	}
+}
+
+func (j *JsonDiff) diff_replace(from interface{}, to interface{}) *Diff {
+	return &Diff{Operation: "r", Value: to}
+}
+
+func (j *JsonDiff) diff(from interface{}, to interface{}) *Diff {
+	if reflect.DeepEqual(from, to) {
+		return nil
+	}
+
+	switch from.(type) {
+		case nil:
+			return &Diff{ Operation: "+", Value: to }
+	}
+
+	switch to.(type) {
+		case nil:
+			return &Diff{ Operation: "-" }
+	}
+
+	fKind := reflect.TypeOf(from).Kind().String()
+	tKind := reflect.TypeOf(to).Kind().String()
+
+	if fKind != tKind {
+		return j.diff_replace(from, to)
+	}
+
+	switch to.(type) {
+		case map[string] interface{}:
+			return j.diff_obj(from, to.(map[string] interface{}))
+		case []interface{}:
+			return j.diff_list(from, to.([]interface{}))
+		case string:
+			return j.diff_string(from, to.(string))
+		default:
+			return j.diff_replace(from, to)
+	}
+}
+
+func(j *JsonDiff) Diff(from, to Json) (*DocumentChange, error) {
+	// nothing to nothing
+	if from == nil && to == nil {
+		return nil, nil
+	}
+
+	// nothing to something
+	if from == nil && to != nil {
+		rval := new(DocumentChange)
+		rval.Changes =make(map[string] Diff)
+		for k, v := range to {
+			rval.Changes[k] = Diff{ Operation: "+", Value: v }
+		}
+		rval.Operation = "M"
+		return rval, nil
+	}
+
+	// something to nothing
+	if from != nil && to == nil {
+		rval := new(DocumentChange)
+		rval.Operation = "-"
+		return rval, nil
+	}
+
+	if equal, err := j.equal(to, from); true == equal {
+		return nil, nil
+	} else {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	rval := new(DocumentChange)
+	rval.Operation = "M"
+	rval.Changes = make(map[string] Diff)
+	for k, tv := range to {
+		if fv, ok := from[k]; ok {
+			if d := j.diff(fv, tv); d != nil {
+				rval.Changes[k] = *d
+			}
+		} else {
+			if d := j.diff(fv, tv); d != nil {
+				rval.Changes[k] = *d
+			}
+		}
+	}
+	for k, fv := range from {
+		if _, ok := to[k]; ok {
+			continue
+		}
+		if d := j.diff(fv, nil); d != nil {
+			rval.Changes[k] = *d
+		}
+	}
+	return rval, nil
+}
+
+func (j *JsonDiff) equal(from, to interface{}) (bool, error) {
+	b1, e1 := json.Marshal(from)
+	b2, e2 := json.Marshal(to)
+	if e1 != nil { return false, e1 }
+	if e2 != nil { return false, e2 }
+	if 0 == bytes.Compare(b1, b2) {
+		return true, nil
+	}
+	return false, nil
+}
+
 // Get a new JsonDiff
 func New() *JsonDiff {
 	j := new(JsonDiff)
 	j.dmp = diffmatchpatch.New()
 	return j
+}
+
+// Test helper
+func getDiff(from, to map[string]interface{}) (*DocumentChange, error) {
+	jd := New()
+	return jd.Diff(from, to)
+}
+
+// Test helper
+func getDelta(from, to map[string]interface{}) (string, error) {
+	diff, e := getDiff(from, to)
+	if e != nil {
+		return "", e
+	}
+	return diff.String()
+}
+
+// Test helper
+func getDeltaString(from, to map[string]interface{}) string {
+	s, _ := getDelta(from, to)
+	return s
+}
+
+// Test Helper
+func getResult(from, to map[string]interface{}) map[string]interface{} {
+	jd := New()
+	diff, _ := getDiff(from, to)
+	res, _ := jd.Apply(from, *diff)
+	return res
+}
+
+// Test helper
+func doesDiffApply(from, to map[string]interface{}) (bool, error) {
+	jd := New()
+	diff, e := getDiff(from, to)
+	res, e := jd.Apply(from, *diff)
+	if e != nil {
+		return false, e
+	}
+	if equal, e := jd.equal(to, res); e != nil {
+		return false, e
+	} else {
+		if false == equal {
+			return false, nil
+		}
+		return true, nil
+	}
 }
