@@ -99,6 +99,7 @@ func (d *Diff) apply(data interface{}) interface{} {
 		}
 		return newL
 	case "L": // [recurse] List, apply the diff operations to the current array
+		// Buggy, requires a schema option to allow simperium to return this op. Unimplimented for now
 		// TODO: This is relatively expensive (especially the copying/extending of slices)
 		list := data.([]interface{})
 		newList := make([]interface{}, len(list))
@@ -137,7 +138,6 @@ func (d *Diff) apply(data interface{}) interface{} {
 			}
 		}
 		return newList
-		// Buggy, requires a schema option to allow simperium to return this op. Unimplimented for now
 	case "O": // [recurse] Object, apply the diff operations to the current object
 		doc := data.(map[string]interface{})
 		for k, v := range d.Value.(map[string]interface{}) {
