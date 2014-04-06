@@ -176,6 +176,7 @@ type DocumentChange struct {
 	CurrentVersion string          `json:"cv,omitempty"`
 	ChangesetIds   []string        `json:"ccids,omitempty"`
 	ChangesetId    string          `json:"ccid,omitempty"`
+	Error          int             `json:"error,omitempty"`
 }
 
 func (d *DocumentChange) String() (string, error) {
